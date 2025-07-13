@@ -72,13 +72,17 @@ class DetailsPanel(QWidget):
         self.project_name_edit = QLineEdit()
         self.date_start_edit = QLineEdit()
         self.date_end_edit = QLineEdit()
+        self.hours_est_edit = QLineEdit()
+        self.location_edit = QLineEdit()
         self.content_edit = QTextEdit()
-        for widget in [self.task_name_edit, self.project_name_edit, self.date_start_edit, self.date_end_edit, self.content_edit]:
+        for widget in [self.task_name_edit, self.project_name_edit, self.date_start_edit, self.date_end_edit, self.hours_est_edit, self.location_edit, self.content_edit]:
             widget.textChanged.connect(self.mark_as_dirty)
         layout.addRow("Task Name:", self.task_name_edit)
         layout.addRow("Project Name:", self.project_name_edit)
         layout.addRow("Start Date:", self.date_start_edit)
         layout.addRow("End Date:", self.date_end_edit)
+        layout.addRow("Hours Est:", self.hours_est_edit)
+        layout.addRow("Location:", self.location_edit)
         layout.addRow(QLabel("Note Content:"))
         layout.addRow(self.content_edit)
         self.setLayout(layout)
@@ -93,8 +97,10 @@ class DetailsPanel(QWidget):
         start_date, end_date = task.metadata.get('date_start'), task.metadata.get('date_end')
         self.date_start_edit.setText(start_date.strftime('%Y-%m-%d') if isinstance(start_date, date) else "")
         self.date_end_edit.setText(end_date.strftime('%Y-%m-%d') if isinstance(end_date, date) else "")
+        self.hours_est_edit.setText(str(task.metadata.get('hours_est', '')))
+        self.location_edit.setText(task.metadata.get('location', ''))
         self.content_edit.setPlainText(task.content)
-        for widget in [self.task_name_edit, self.project_name_edit, self.date_start_edit, self.date_end_edit, self.content_edit]:
+        for widget in [self.task_name_edit, self.project_name_edit, self.date_start_edit, self.date_end_edit, self.hours_est_edit, self.location_edit, self.content_edit]:
             widget.blockSignals(False)
 
     def mark_as_dirty(self):
@@ -111,6 +117,8 @@ class DetailsPanel(QWidget):
             self.current_task.metadata['date_end'] = datetime.strptime(self.date_end_edit.text(), '%Y-%m-%d').date()
         except ValueError:
             print(f"Warning: Invalid date format for task '{self.current_task.metadata.get('task_name')}'. Not updating dates.")
+        self.current_task.metadata['hours_est'] = self.hours_est_edit.text()
+        self.current_task.metadata['location'] = self.location_edit.text()
         self.current_task.content = self.content_edit.toPlainText()
 
 class GanttChartWidget(QWidget):
@@ -120,10 +128,71 @@ class GanttChartWidget(QWidget):
         self.tasks_to_display = []
         self.start_date, self.end_date = date.today(), date.today() + timedelta(days=60)
         self.task_rects = []
+        self.scroll_y = 0
+        self.zoom_factor = 1.0
 
     def set_tasks(self, tasks: list[VibeTask], start_date: date, end_date: date):
         self.tasks_to_display = tasks
         self.start_date, self.end_date = start_date, end_date
+        self.update()
+
+    def wheelEvent(self, event):
+        """Handles mouse wheel scrolling for panning and zooming."""
+        modifiers = QApplication.keyboardModifiers()
+        delta = event.angleDelta().y()
+
+        if modifiers == Qt.KeyboardModifier.ControlModifier:
+            self.zoom(delta > 0, event.position().x())
+        elif modifiers == Qt.KeyboardModifier.ShiftModifier:
+            # Vertical scroll
+            self.scroll_y += delta / 120 * 10 # Scroll by 10 pixels
+            self.scroll_y = min(0, self.scroll_y) # Prevent scrolling past the top
+        else:
+            # Horizontal scroll
+            days_to_scroll = -int(delta / 120) * 2  # Scroll by 2 days
+            self.start_date += timedelta(days=days_to_scroll)
+            self.end_date += timedelta(days=days_to_scroll)
+
+        self.update()
+        event.accept()
+
+    def keyPressEvent(self, event):
+        """Handles key presses for zooming."""
+        if event.modifiers() == Qt.KeyboardModifier.ControlModifier:
+            if event.key() == Qt.Key.Key_Plus or event.key() == Qt.Key.Key_Equal:
+                self.zoom(True, self.width() / 2)
+            elif event.key() == Qt.Key.Key_Minus:
+                self.zoom(False, self.width() / 2)
+        else:
+            super().keyPressEvent(event)
+
+    def zoom(self, zoom_in, mouse_x):
+        """Zooms the Gantt chart in or out, centered on the mouse position."""
+        zoom_in_factor = 1.1
+        zoom_out_factor = 1 / zoom_in_factor
+
+        # Calculate the date at the mouse position before zooming
+        total_days = (self.end_date - self.start_date).days
+        if total_days <= 0: return
+
+        pixels_per_day = (self.width() - 170) / total_days
+        days_from_start = (mouse_x - 170) / pixels_per_day
+        center_date = self.start_date + timedelta(days=days_from_start)
+
+        # Apply zoom
+        if zoom_in:
+            self.zoom_factor *= zoom_in_factor
+        else:
+            self.zoom_factor *= zoom_out_factor
+        self.zoom_factor = max(0.1, min(self.zoom_factor, 10.0))
+
+        # Recalculate the date range to keep the center_date at the same mouse position
+        new_total_days = total_days / self.zoom_factor
+        new_days_from_start = days_from_start / self.zoom_factor
+
+        self.start_date = center_date - timedelta(days=new_days_from_start)
+        self.end_date = self.start_date + timedelta(days=new_total_days)
+
         self.update()
 
     def mousePressEvent(self, event):
@@ -142,7 +211,7 @@ class GanttChartWidget(QWidget):
             return
         total_days = (self.end_date - self.start_date).days
         if total_days <= 0: return
-        pixels_per_day = (width - left_margin) / total_days
+        pixels_per_day = (width - left_margin) / total_days * self.zoom_factor
         current_date = self.start_date
         while current_date <= self.end_date:
             x_pos = left_margin + (current_date - self.start_date).days * pixels_per_day
@@ -155,7 +224,8 @@ class GanttChartWidget(QWidget):
         painter.setPen(QColor("#555"))
         painter.drawLine(0, header_height, width, header_height)
         for i, task in enumerate(self.tasks_to_display):
-            y_pos = header_height + (i * row_height)
+            y_pos = header_height + (i * row_height) + self.scroll_y
+            if y_pos < header_height: continue # Don't draw tasks that are scrolled off the top
             task_name = f"* {task.metadata.get('task_name', '')}" if task.is_dirty else task.metadata.get('task_name', '')
             painter.setPen(QColor("#ccc"))
             painter.drawText(QRectF(5, y_pos, left_margin - 10, row_height), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, task_name)
