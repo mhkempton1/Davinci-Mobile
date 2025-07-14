@@ -10,6 +10,7 @@ from PyQt6.QtCore import Qt, QRectF, QDate, pyqtSignal
 from datetime import date, timedelta, datetime
 
 from engine import ingest_project_data, VibeTask, validate_task_data
+from GanttChartWidget import GanttChartWidget
 import frontmatter
 
 DARK_THEME_QSS = """
@@ -121,127 +122,6 @@ class DetailsPanel(QWidget):
         self.current_task.metadata['location'] = self.location_edit.text()
         self.current_task.content = self.content_edit.toPlainText()
 
-class GanttChartWidget(QWidget):
-    task_clicked = pyqtSignal(VibeTask)
-    def __init__(self):
-        super().__init__()
-        self.tasks_to_display = []
-        self.start_date, self.end_date = date.today(), date.today() + timedelta(days=60)
-        self.task_rects = []
-        self.scroll_y = 0
-        self.zoom_factor = 1.0
-
-    def set_tasks(self, tasks: list[VibeTask], start_date: date, end_date: date):
-        self.tasks_to_display = tasks
-        self.start_date, self.end_date = start_date, end_date
-        self.update()
-
-    def wheelEvent(self, event):
-        """Handles mouse wheel scrolling for panning and zooming."""
-        modifiers = QApplication.keyboardModifiers()
-        delta = event.angleDelta().y()
-
-        if modifiers == Qt.KeyboardModifier.ControlModifier:
-            self.zoom(delta > 0, event.position().x())
-        elif modifiers == Qt.KeyboardModifier.ShiftModifier:
-            # Vertical scroll
-            self.scroll_y += delta / 120 * 10 # Scroll by 10 pixels
-            self.scroll_y = min(0, self.scroll_y) # Prevent scrolling past the top
-        else:
-            # Horizontal scroll
-            days_to_scroll = -int(delta / 120) * 2  # Scroll by 2 days
-            self.start_date += timedelta(days=days_to_scroll)
-            self.end_date += timedelta(days=days_to_scroll)
-
-        self.update()
-        event.accept()
-
-    def keyPressEvent(self, event):
-        """Handles key presses for zooming."""
-        if event.modifiers() == Qt.KeyboardModifier.ControlModifier:
-            if event.key() == Qt.Key.Key_Plus or event.key() == Qt.Key.Key_Equal:
-                self.zoom(True, self.width() / 2)
-            elif event.key() == Qt.Key.Key_Minus:
-                self.zoom(False, self.width() / 2)
-        else:
-            super().keyPressEvent(event)
-
-    def zoom(self, zoom_in, mouse_x):
-        """Zooms the Gantt chart in or out, centered on the mouse position."""
-        zoom_in_factor = 1.1
-        zoom_out_factor = 1 / zoom_in_factor
-
-        # Calculate the date at the mouse position before zooming
-        total_days = (self.end_date - self.start_date).days
-        if total_days <= 0: return
-
-        pixels_per_day = (self.width() - 170) / total_days
-        days_from_start = (mouse_x - 170) / pixels_per_day
-        center_date = self.start_date + timedelta(days=days_from_start)
-
-        # Apply zoom
-        if zoom_in:
-            self.zoom_factor *= zoom_in_factor
-        else:
-            self.zoom_factor *= zoom_out_factor
-        self.zoom_factor = max(0.1, min(self.zoom_factor, 10.0))
-
-        # Recalculate the date range to keep the center_date at the same mouse position
-        new_total_days = total_days / self.zoom_factor
-        new_days_from_start = days_from_start / self.zoom_factor
-
-        self.start_date = center_date - timedelta(days=new_days_from_start)
-        self.end_date = self.start_date + timedelta(days=new_total_days)
-
-        self.update()
-
-    def mousePressEvent(self, event):
-        for rect, task in self.task_rects:
-            if rect.contains(event.position()):
-                self.task_clicked.emit(task)
-                return
-
-    def paintEvent(self, event):
-        painter, self.task_rects = QPainter(self), []
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        width, height = self.width(), self.height()
-        header_height, row_height, left_margin = 40, 25, 170
-        if not self.tasks_to_display:
-            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Load a project and apply filters.")
-            return
-        total_days = (self.end_date - self.start_date).days
-        if total_days <= 0: return
-        pixels_per_day = (width - left_margin) / total_days * self.zoom_factor
-        current_date = self.start_date
-        while current_date <= self.end_date:
-            x_pos = left_margin + (current_date - self.start_date).days * pixels_per_day
-            is_month_start, is_week_start = current_date.day == 1, current_date.weekday() == 0
-            pen_color = "#888" if is_month_start else "#666" if is_week_start else "#444"
-            painter.setPen(QPen(QColor(pen_color), 1 if is_month_start else 0.5))
-            if is_month_start: painter.drawText(int(x_pos) + 4, 18, current_date.strftime('%b %Y'))
-            painter.drawLine(int(x_pos), header_height if is_week_start else 25, int(x_pos), height)
-            current_date += timedelta(days=1)
-        painter.setPen(QColor("#555"))
-        painter.drawLine(0, header_height, width, header_height)
-        for i, task in enumerate(self.tasks_to_display):
-            y_pos = header_height + (i * row_height) + self.scroll_y
-            if y_pos < header_height: continue # Don't draw tasks that are scrolled off the top
-            task_name = f"* {task.metadata.get('task_name', '')}" if task.is_dirty else task.metadata.get('task_name', '')
-            painter.setPen(QColor("#ccc"))
-            painter.drawText(QRectF(5, y_pos, left_margin - 10, row_height), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, task_name)
-            task_start, task_end = task.metadata.get('date_start'), task.metadata.get('date_end')
-            if not isinstance(task_start, date) or not isinstance(task_end, date): continue
-            x_start_offset = (task_start - self.start_date).days * pixels_per_day
-            bar_width = max(1, (task_end - task_start + timedelta(days=1)).days * pixels_per_day)
-            bar_rect = QRectF(left_margin + x_start_offset, y_pos + 5, bar_width, row_height - 10)
-            self.task_rects.append((bar_rect, task))
-            base_color = generate_color_from_text(task.metadata.get('project_name'))
-            validation_issues = validate_task_data(task.metadata)
-            final_color = QColor.fromHsv(base_color.hue(), 255, 255) if validation_issues and "impossible_timeline" in validation_issues else base_color
-            painter.setBrush(final_color)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawRoundedRect(bar_rect, 5, 5)
-
 class VibeGanttApp(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -333,7 +213,7 @@ class VibeGanttApp(QMainWindow):
         else:
             days = int(selected_range.split()[1]) if "Days" in selected_range else 365
             view_start, view_end = (today, today + timedelta(days=days)) if "Next" in selected_range else (date(today.year, 1, 1), date(today.year, 12, 31))
-        
+
         selected_projects = {item.text() for item in self.project_filter.selectedItems()}
         selected_phases = {item.text() for item in self.phase_filter.selectedItems()}
         selected_cost_codes = {item.text() for item in self.cost_code_filter.selectedItems()}
