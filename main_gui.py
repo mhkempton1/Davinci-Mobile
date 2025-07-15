@@ -1,5 +1,6 @@
 import sys
 import os
+from tkinter import filedialog, Tk
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QLabel, QMenuBar,
                              QStatusBar, QWidget, QVBoxLayout, QListWidget,
                              QSplitter, QPushButton, QAbstractItemView, QFormLayout,
@@ -278,7 +279,15 @@ class VibeGanttApp(QMainWindow):
         file_menu.addAction(exit_action)
 
     def load_project(self):
-        self.tasks, self.errors = ingest_project_data()
+        root = Tk()
+        root.withdraw()
+        root_path_str = filedialog.askdirectory(title="Select Root Project Folder")
+        root.destroy()
+        if not root_path_str:
+            self.statusBar().showMessage("Project loading cancelled.", 5000)
+            return
+
+        self.tasks, self.errors = ingest_project_data(root_path_str)
         status_message = f"Loaded {len(self.tasks)} tasks."
         if self.errors: status_message += f" Found {len(self.errors)} issues."
         self.statusBar().showMessage(status_message)
