@@ -1,16 +1,19 @@
 import sys
-import hashlib
 import os
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QLabel, QMenuBar,
                              QStatusBar, QWidget, QVBoxLayout, QListWidget,
                              QSplitter, QPushButton, QAbstractItemView, QFormLayout,
-                             QLineEdit, QTextEdit, QComboBox)
-from PyQt6.QtGui import QAction, QPainter, QColor, QPen
-from PyQt6.QtCore import Qt, QRectF, QDate, pyqtSignal
+                             QLineEdit, QTextEdit, QComboBox, QMessageBox, QWidget, QSizePolicy,
+                             QScrollArea) # Import QScrollArea
+from PyQt6.QtGui import QAction, QPainter, QColor, QPen, QTextOption, QFont
+from PyQt6.QtCore import Qt, QRectF, QDate, pyqtSignal, QPointF
+from PyQt6.QtPrintSupport import QPrinter, QPrintDialog
+
 from datetime import date, timedelta, datetime
 
 from engine import ingest_project_data, VibeTask, validate_task_data
-from GanttChartWidget import GanttChartWidget
+from GanttChartWidget import GanttChartWidget # generate_color_from_text is now in GanttChartWidget
+
 import frontmatter
 
 DARK_THEME_QSS = """
@@ -55,12 +58,6 @@ DARK_THEME_QSS = """
     }
 """
 
-def generate_color_from_text(text):
-    if not text: return QColor("#888888")
-    hash_val = int(hashlib.md5(text.encode('utf-8')).hexdigest(), 16)
-    hue = hash_val % 360
-    return QColor.fromHsv(hue, 200, 220)
-
 class DetailsPanel(QWidget):
     task_edited = pyqtSignal()
     def __init__(self):
@@ -69,6 +66,7 @@ class DetailsPanel(QWidget):
         self.setDisabled(True)
         layout = QFormLayout()
         layout.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+
         self.task_name_edit = QLineEdit()
         self.project_name_edit = QLineEdit()
         self.date_start_edit = QLineEdit()
@@ -76,15 +74,19 @@ class DetailsPanel(QWidget):
         self.hours_est_edit = QLineEdit()
         self.location_edit = QLineEdit()
         self.content_edit = QTextEdit()
+        self.content_edit.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+
+
         for widget in [self.task_name_edit, self.project_name_edit, self.date_start_edit, self.date_end_edit, self.hours_est_edit, self.location_edit, self.content_edit]:
             widget.textChanged.connect(self.mark_as_dirty)
+
         layout.addRow("Task Name:", self.task_name_edit)
         layout.addRow("Project Name:", self.project_name_edit)
-        layout.addRow("Start Date:", self.date_start_edit)
-        layout.addRow("End Date:", self.date_end_edit)
+        layout.addRow("Start Date (YYYY-MM-DD):", self.date_start_edit)
+        layout.addRow("End Date (YYYY-MM-DD):", self.date_end_edit)
         layout.addRow("Hours Est:", self.hours_est_edit)
         layout.addRow("Location:", self.location_edit)
-        layout.addRow(QLabel("Note Content:"))
+        layout.addRow(QLabel("Note Content (Markdown/Text):"))
         layout.addRow(self.content_edit)
         self.setLayout(layout)
 
@@ -94,7 +96,13 @@ class DetailsPanel(QWidget):
         for widget in [self.task_name_edit, self.project_name_edit, self.date_start_edit, self.date_end_edit, self.content_edit]:
             widget.blockSignals(True)
         self.task_name_edit.setText(task.metadata.get('task_name', ''))
-        self.project_name_edit.setText(task.metadata.get('project_name', ''))
+        
+        project_name_val = task.metadata.get('project_name', '')
+        if isinstance(project_name_val, list):
+            self.project_name_edit.setText(str(project_name_val[0]) if project_name_val else '')
+        else:
+            self.project_name_edit.setText(str(project_name_val))
+
         start_date, end_date = task.metadata.get('date_start'), task.metadata.get('date_end')
         self.date_start_edit.setText(start_date.strftime('%Y-%m-%d') if isinstance(start_date, date) else "")
         self.date_end_edit.setText(end_date.strftime('%Y-%m-%d') if isinstance(end_date, date) else "")
@@ -111,16 +119,75 @@ class DetailsPanel(QWidget):
 
     def update_current_task_object(self):
         if not self.current_task: return
-        self.current_task.metadata['task_name'] = self.task_name_edit.text()
-        self.current_task.metadata['project_name'] = self.project_name_edit.text()
-        try:
-            self.current_task.metadata['date_start'] = datetime.strptime(self.date_start_edit.text(), '%Y-%m-%d').date()
-            self.current_task.metadata['date_end'] = datetime.strptime(self.date_end_edit.text(), '%Y-%m-%d').date()
-        except ValueError:
-            print(f"Warning: Invalid date format for task '{self.current_task.metadata.get('task_name')}'. Not updating dates.")
-        self.current_task.metadata['hours_est'] = self.hours_est_edit.text()
-        self.current_task.metadata['location'] = self.location_edit.text()
-        self.current_task.content = self.content_edit.toPlainText()
+        
+        task_name = self.task_name_edit.text()
+        project_name = self.project_name_edit.text()
+        start_date_str = self.date_start_edit.text()
+        end_date_str = self.date_end_edit.text()
+        hours_est = self.hours_est_edit.text()
+        location = self.location_edit.text()
+        content = self.content_edit.toPlainText()
+
+        parsed_start_date = None
+        if start_date_str:
+            try:
+                parsed_start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
+            except ValueError:
+                QMessageBox.warning(self, "Invalid Start Date Format",
+                                    "Start Date could not be parsed. Please use YYYY-MM-DD format.")
+                parsed_start_date = self.current_task.metadata.get('date_start', None)
+
+
+        parsed_end_date = None
+        if end_date_str:
+            try:
+                parsed_end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
+            except ValueError:
+                QMessageBox.warning(self, "Invalid End Date Format",
+                                    "End Date could not be parsed. Please use YYYY-MM-DD format.")
+                parsed_end_date = self.current_task.metadata.get('date_end', None)
+
+
+        temp_metadata = {
+            'task_name': task_name,
+            'project_name': project_name,
+            'date_start': parsed_start_date,
+            'date_end': parsed_end_date,
+            'date_due': self.current_task.metadata.get('date_due') 
+        }
+
+        validation_issues = validate_task_data(temp_metadata)
+        
+        if validation_issues:
+            display_issues = [issue for issue in validation_issues if issue != 'using_date_due_for_date_end']
+            if display_issues:
+                issue_msg = ", ".join(display_issues)
+                QMessageBox.warning(self, "Date Validation Info/Warning",
+                                    f"Issues with dates for '{temp_metadata.get('task_name', 'Current Task')}': {issue_msg}\n"
+                                    "Dates have been adjusted to defaults or corrected to maintain timeline validity. "
+                                    "Please check the values displayed.")
+            
+        self.current_task.metadata['task_name'] = task_name
+        
+        if isinstance(project_name, list):
+            self.current_task.metadata['project_name'] = project_name[0] if project_name else ''
+        else:
+            self.current_task.metadata['project_name'] = project_name
+
+
+        self.current_task.metadata['date_start'] = temp_metadata['date_start']
+        self.current_task.metadata['date_end'] = temp_metadata['date_end']
+        self.current_task.metadata['hours_est'] = hours_est
+        self.current_task.metadata['location'] = location
+        self.current_task.content = content
+
+        self.date_start_edit.blockSignals(True)
+        self.date_end_edit.blockSignals(True)
+        self.date_start_edit.setText(self.current_task.metadata['date_start'].strftime('%Y-%m-%d'))
+        self.date_end_edit.setText(self.current_task.metadata['date_end'].strftime('%Y-%m-%d'))
+        self.date_start_edit.blockSignals(False)
+        self.date_end_edit.blockSignals(False)
+
 
 class VibeGanttApp(QMainWindow):
     def __init__(self):
@@ -130,39 +197,64 @@ class VibeGanttApp(QMainWindow):
         self.tasks, self.errors = [], []
         self._create_menu_bar()
         self._setup_ui()
+        self.load_project() # Automatically load project on startup
 
     def _setup_ui(self):
         splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.filter_panel, self.filter_layout = QWidget(), QVBoxLayout()
+        self.filter_panel = QWidget()
+        self.filter_panel.setMinimumWidth(200)
+        self.filter_panel.setMaximumWidth(400)
+        self.filter_layout = QVBoxLayout()
         self.filter_panel.setLayout(self.filter_layout)
         self.filter_layout.addWidget(QLabel("Date Range:"))
         self.date_range_filter = QComboBox()
         self.date_range_filter.addItems(["Next 30 Days", "Next 60 Days", "Next 90 Days", "This Year", "All Time"])
+        self.date_range_filter.currentIndexChanged.connect(self.apply_filters)
         self.filter_layout.addWidget(self.date_range_filter)
         self.project_filter = self._create_filter_widget("Project Name")
         self.phase_filter = self._create_filter_widget("Phase")
         self.cost_code_filter = self._create_filter_widget("Cost Code")
         self.assigned_to_filter = self._create_filter_widget("Assigned To")
-        self.apply_button = QPushButton("Apply Filters")
-        self.apply_button.clicked.connect(self.apply_filters)
-        self.filter_layout.addWidget(self.apply_button)
+
+        for lw in [self.project_filter, self.phase_filter, self.cost_code_filter, self.assigned_to_filter]:
+            lw.itemSelectionChanged.connect(self.apply_filters)
+
+        self.filter_layout.addStretch(1)
+
         splitter.addWidget(self.filter_panel)
+        
+        # --- QScrollArea for GanttChartWidget ---
+        self.gantt_scroll_area = QScrollArea()
+        self.gantt_scroll_area.setWidgetResizable(True) # Allow GanttChartWidget to stretch/shrink within scroll area
+        
         self.gantt_chart = GanttChartWidget()
-        splitter.addWidget(self.gantt_chart)
+        self.gantt_scroll_area.setWidget(self.gantt_chart)
+        
+        # Enable scroll bars as needed based on sizeHint from GanttChartWidget
+        self.gantt_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.gantt_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        
+        splitter.addWidget(self.gantt_scroll_area) # Add the scroll area to the splitter
+        
         self.details_panel = DetailsPanel()
         splitter.addWidget(self.details_panel)
         self.gantt_chart.task_clicked.connect(self.details_panel.display_task)
-        self.details_panel.task_edited.connect(self.gantt_chart.update)
+        self.details_panel.task_edited.connect(self.gantt_chart.update) # Trigger chart repaint on task edit
+
         splitter.setSizes([220, 1000, 380])
         self.setCentralWidget(splitter)
         self.setStatusBar(QStatusBar(self))
 
     def _create_filter_widget(self, name):
-        self.filter_layout.addWidget(QLabel(f"{name}:"))
+        label = QLabel(f"{name}:")
+        label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        self.filter_layout.addWidget(label)
         list_widget = QListWidget()
         list_widget.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        list_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.filter_layout.addWidget(list_widget)
         return list_widget
+
 
     def _create_menu_bar(self):
         menu_bar = self.menuBar()
@@ -174,6 +266,12 @@ class VibeGanttApp(QMainWindow):
         save_all_action.setShortcut("Ctrl+S")
         save_all_action.triggered.connect(self.save_all_changes)
         file_menu.addAction(save_all_action)
+
+        print_action = QAction("&Print Gantt Chart...", self)
+        print_action.setShortcut("Ctrl+P")
+        print_action.triggered.connect(self.print_gantt_chart)
+        file_menu.addAction(print_action)
+
         file_menu.addSeparator()
         exit_action = QAction("E&xit", self)
         exit_action.triggered.connect(self.close)
@@ -185,7 +283,7 @@ class VibeGanttApp(QMainWindow):
         if self.errors: status_message += f" Found {len(self.errors)} issues."
         self.statusBar().showMessage(status_message)
         self._populate_filter_options()
-        self.gantt_chart.set_tasks([], date.today(), date.today())
+        self.apply_filters() # Apply initial filter after loading tasks
         self.details_panel.setDisabled(True)
 
     def _populate_filter_options(self):
@@ -195,8 +293,14 @@ class VibeGanttApp(QMainWindow):
                 value = t.metadata.get(metadata_key)
                 if value:
                     values = value if isinstance(value, list) else [value]
-                    all_values.update(str(v) for v in values)
+                    all_values.update(str(v) for v in values) # Ensure values are string for set/sorting
             return sorted(list(all_values))
+        
+        self.project_filter.clearSelection()
+        self.phase_filter.clearSelection()
+        self.cost_code_filter.clearSelection()
+        self.assigned_to_filter.clearSelection()
+
         for list_widget, items in [(self.project_filter, get_all_values('project_name')),
                                    (self.phase_filter, get_all_values('phase')),
                                    (self.cost_code_filter, get_all_values('cost_code')),
@@ -221,14 +325,19 @@ class VibeGanttApp(QMainWindow):
         filtered_tasks = []
         for task in self.tasks:
             task_start, task_end = task.metadata.get('date_start'), task.metadata.get('date_end')
-            if not (isinstance(task_start, date) and isinstance(task_end, date)): continue
-            if task_start > view_end or task_end < view_start: continue
+            if not (isinstance(task_start, date) and isinstance(task_end, date)):
+                continue
+
+            if task_start > view_end or task_end < view_start:
+                continue
+
             def check_match(key, selections):
                 if not selections: return True
                 value = task.metadata.get(key)
                 if not value: return False
                 value_list = value if isinstance(value, list) else [value]
                 return any(str(item) in selections for item in value_list)
+
             if (check_match('project_name', selected_projects) and
                 check_match('phase', selected_phases) and
                 check_match('cost_code', selected_cost_codes) and
@@ -240,21 +349,77 @@ class VibeGanttApp(QMainWindow):
     def save_all_changes(self):
         if self.details_panel.current_task and self.details_panel.current_task.is_dirty:
             self.details_panel.update_current_task_object()
+
         saved_count = 0
         for task in self.tasks:
             if task.is_dirty:
                 try:
                     temp_path = task.file_path.with_suffix('.md.tmp')
+                    post_to_dump = frontmatter.Post(task.content)
+                    
+                    clean_metadata = {}
+                    problematic_keys = {'date_order_due', 'date_precon_due'}
+
+                    for key, value in task.metadata.items():
+                        if key in problematic_keys and isinstance(value, str) and ("=" in value or "$=" in value):
+                            # Skip saving problematic Obsidian DataviewJS expressions directly
+                            continue 
+                        elif isinstance(value, (date, datetime)):
+                            clean_metadata[key] = value.strftime('%Y-%m-%d')
+                        elif isinstance(value, list):
+                            clean_metadata[key] = ", ".join(str(item) for item in value)
+                        elif isinstance(value, (int, float, bool)):
+                            clean_metadata[key] = value
+                        elif value is None:
+                            clean_metadata[key] = ""
+                        else:
+                            clean_metadata[key] = str(value)
+                    
+                    post_to_dump.metadata = clean_metadata
+                    
                     with open(temp_path, 'w', encoding='utf-8') as f:
-                        frontmatter.dump(task, f)
+                        frontmatter.dump(post_to_dump, f)
                     os.replace(temp_path, task.file_path)
                     task.is_dirty = False
                     saved_count += 1
                 except Exception as e:
                     print(f"CRITICAL: Failed to save {task.file_path.name}. Error: {e}")
-                    if os.path.exists(temp_path): os.remove(temp_path)
+                    QMessageBox.critical(self, "Save Error", f"Failed to save {task.file_path.name}.\nError: {e}")
+                    if os.path.exists(temp_path):
+                        os.remove(temp_path)
         self.statusBar().showMessage(f"Successfully saved {saved_count} tasks.", 5000)
         self.gantt_chart.update()
+
+    def print_gantt_chart(self):
+        printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+        print_dialog = QPrintDialog(printer, self)
+        if print_dialog.exec() == QPrintDialog.DialogCode.Accepted:
+            painter = QPainter(printer)
+            # Use QPrinter.Unit.Point for pageRect() for consistent results
+            page_rect = printer.pageRect(QPrinter.Unit.Point)
+
+            gantt_content_size = self.gantt_chart.sizeHint()
+            gantt_width = gantt_content_size.width()
+            gantt_height = gantt_content_size.height()
+
+            if gantt_width == 0 or gantt_height == 0:
+                QMessageBox.warning(self, "Print Error", "Gantt chart has no content size to print. Load tasks first.")
+                painter.end()
+                return
+
+            scale_factor_x = page_rect.width() / gantt_width
+            scale_factor_y = page_rect.height() / gantt_height
+            scale_factor = min(scale_factor_x, scale_factor_y)
+
+            # Translate to the printable area's top-left margin and then scale
+            painter.translate(printer.pageRect(QPrinter.Unit.Point).topLeft())
+            painter.scale(scale_factor, scale_factor)
+            
+            self.gantt_chart.render(painter)
+            painter.end()
+            self.statusBar().showMessage("Gantt Chart printed successfully.", 3000)
+        else:
+            self.statusBar().showMessage("Print cancelled.", 3000)
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)

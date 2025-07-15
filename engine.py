@@ -2,7 +2,7 @@ import frontmatter
 import uuid
 from pathlib import Path
 from tkinter import filedialog, Tk
-from datetime import datetime
+from datetime import datetime, date, timedelta
 
 class VibeTask:
     """Represents a single task parsed from a Markdown file."""
@@ -17,31 +17,63 @@ class VibeTask:
         return f"VibeTask(name='{task_name}', path='{self.file_path.name}')"
 
 def validate_task_data(task_metadata):
-    """Checks for presence of essential fields AND logical consistency."""
-    required_fields = ['task_name', 'date_start', 'date_end']
+    """Checks for presence of essential fields AND logical consistency, providing defaults for dates.
+       Modifies task_metadata in place with validated/defaulted date objects."""
+    issues = []
 
-    missing_fields = [field for field in required_fields if field not in task_metadata or task_metadata[field] is None]
-    if missing_fields:
-        return missing_fields
+    if 'task_name' not in task_metadata or task_metadata['task_name'] is None:
+        issues.append('missing_task_name')
 
-    try:
-        start_date = task_metadata['date_start']
-        end_date = task_metadata['date_end']
-        # Ensure they are date objects if they are not already
-        if not isinstance(start_date, datetime.date):
-            start_date = datetime.strptime(str(start_date), '%Y-%m-%d').date()
-        if not isinstance(end_date, datetime.date):
-            end_date = datetime.strptime(str(end_date), '%Y-%m-%d').date()
-    except (ValueError, TypeError):
-        return ["invalid_date_format"]
+    start_date = None
+    end_date = None
 
+    # Helper to parse date values, handling lists and various date types
+    def parse_date_value(value, default_date=None):
+        if value is None:
+            return default_date
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date): # Already a date object
+            return value
+        if isinstance(value, list) and value: # Take first item if it's a list
+            value = value[0]
+        try:
+            return datetime.strptime(str(value), '%Y-%m-%d').date()
+        except (ValueError, TypeError):
+            return default_date
+
+    # Process date_start
+    start_date = parse_date_value(task_metadata.get('date_start'), date.today())
+    if 'date_start' not in task_metadata or task_metadata['date_start'] is None:
+        issues.append("missing_date_start")
+    elif not isinstance(task_metadata['date_start'], (date, datetime)) and "invalid_date_start_format" not in issues and start_date == date.today():
+         issues.append("invalid_date_start_format")
+
+
+    # Process date_end, with date_due as fallback
+    end_date = parse_date_value(task_metadata.get('date_end'))
+    if end_date is None: # If date_end is missing/invalid, try date_due
+        end_date = parse_date_value(task_metadata.get('date_due'))
+        if end_date is not None:
+            issues.append("using_date_due_for_date_end")
+    
+    if end_date is None: # If still no end_date, default
+        issues.append("missing_date_end")
+        end_date = start_date + timedelta(days=1)
+
+    # Ensure start_date is not after end_date
     if start_date > end_date:
-        return ["impossible_timeline"]
+        issues.append("impossible_timeline")
+        end_date = start_date # Adjust end_date to be at least start_date
 
-    return None
+    # Update metadata with validated/defaulted dates
+    task_metadata['date_start'] = start_date
+    task_metadata['date_end'] = end_date
+
+    return issues if issues else None
 
 def ingest_project_data():
-    """Scans, parses, and now VALIDATES project files."""
+    """Scans, parses, and VALIDATES project files."""
     print("Initializing Vibe Engine... Please select your root project folder.")
     root = Tk()
     root.withdraw()
@@ -61,21 +93,22 @@ def ingest_project_data():
     all_tasks = []
     ingestion_errors = []
 
-# In engine.py, inside the ingest_project_data function
-
     for file in task_files:
         try:
             with open(file, 'r', encoding='utf-8') as f:
                 task_post = frontmatter.load(f)
 
-            # --- THE CHANGE IS HERE ---
-            validation_issues = validate_task_data(task_post.metadata)
+            # Create a copy of metadata for validation, as validation function modifies it
+            # The validation function will ensure 'date_start' and 'date_end' are proper date objects
+            temp_metadata_for_validation = task_post.metadata.copy()
+            validation_issues = validate_task_data(temp_metadata_for_validation)
+            
+            # Apply the (potentially corrected) metadata back to the task_post
+            task_post.metadata.update(temp_metadata_for_validation)
+
             if validation_issues:
-                # We still report the error...
-                error_message = f"File: {file.name} | Validation Error: Missing or invalid fields -> {validation_issues}"
+                error_message = f"File: {file.name} | Validation Error: {validation_issues}"
                 ingestion_errors.append(error_message)
-                # ...but we REMOVE the 'continue' statement that was here.
-                # This ensures the task is loaded regardless of validation status.
 
             if 'vibe_id' not in task_post.metadata:
                 new_id = str(uuid.uuid4())
@@ -85,7 +118,6 @@ def ingest_project_data():
             else:
                 task_obj = VibeTask(file, task_post.metadata, task_post.content)
 
-            # Now, all tasks (even those with errors) will be added to the list.
             all_tasks.append(task_obj)
 
         except Exception as e:
