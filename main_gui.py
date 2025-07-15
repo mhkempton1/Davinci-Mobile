@@ -343,7 +343,7 @@ class VibeGanttApp(QMainWindow):
                 check_match('cost_code', selected_cost_codes) and
                 check_match('assigned_to', selected_assignees)):
                 filtered_tasks.append(task)
-        self.gantt_chart.set_tasks(filtered_tasks, view_start, view_end)
+        self.gantt_chart.set_tasks(self.tasks, filtered_tasks, view_start, view_end)
         self.statusBar().showMessage(f"Rendering {len(filtered_tasks)} tasks.", 3000)
 
     def save_all_changes(self):
@@ -367,14 +367,16 @@ class VibeGanttApp(QMainWindow):
                         elif isinstance(value, (date, datetime)):
                             clean_metadata[key] = value.strftime('%Y-%m-%d')
                         elif isinstance(value, list):
-                            clean_metadata[key] = ", ".join(str(item) for item in value)
-                        elif isinstance(value, (int, float, bool)):
-                            clean_metadata[key] = value
+                            # Ensure all items in the list are strings before joining
+                            clean_metadata[key] = ", ".join(map(str, value))
                         elif value is None:
                             clean_metadata[key] = ""
                         else:
                             clean_metadata[key] = str(value)
                     
+                    if task.linked_tasks:
+                        clean_metadata['linked_tasks'] = ", ".join(task.linked_tasks)
+
                     post_to_dump.metadata = clean_metadata
                     
                     with open(temp_path, 'w', encoding='utf-8') as f:
@@ -421,9 +423,13 @@ class VibeGanttApp(QMainWindow):
         else:
             self.statusBar().showMessage("Print cancelled.", 3000)
 
+import os
+
 if __name__ == '__main__':
     app = QApplication(sys.argv)
     app.setStyleSheet(DARK_THEME_QSS)
     main_window = VibeGanttApp()
     main_window.show()
-    sys.exit(app.exec())
+
+    if os.environ.get('QT_QPA_PLATFORM') != 'offscreen':
+        sys.exit(app.exec())

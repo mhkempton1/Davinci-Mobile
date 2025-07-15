@@ -22,6 +22,7 @@ class GanttChartWidget(QWidget):
 
     def __init__(self):
         super().__init__()
+        self.tasks = []
         self.tasks_to_display = []
         self.start_date, self.end_date = date.today(), date.today() + timedelta(days=60)
         self.task_rects = [] # Stores QRectF objects for click detection (logical coordinates)
@@ -34,10 +35,16 @@ class GanttChartWidget(QWidget):
         self.last_zoom_time = datetime.now() # For zoom cooldown
         self.zoom_cooldown_ms = 100 # Milliseconds
 
+        self.dragging = False
+        self.drag_task = None
+        self.drag_start_pos = None
+        self.drag_start_date = None
+
         # Set a minimum size to ensure it's always viewable even with no tasks
         self.setMinimumSize(QSize(200 + self.name_column_width, self.header_height + 100)) # Min visible area
 
-    def set_tasks(self, tasks: list[VibeTask], start_date: date, end_date: date):
+    def set_tasks(self, all_tasks: list[VibeTask], filtered_tasks: list[VibeTask], start_date: date, end_date: date):
+        self.tasks = all_tasks
         # Helper function to ensure string conversion for sorting keys
         def get_string_value(metadata_value, default=""):
             if isinstance(metadata_value, list):
@@ -45,7 +52,7 @@ class GanttChartWidget(QWidget):
             return str(metadata_value) if metadata_value is not None else default
 
         # Sort tasks by project name then task name for consistent grouping
-        self.tasks_to_display = sorted(tasks, key=lambda t: (
+        self.tasks_to_display = sorted(filtered_tasks, key=lambda t: (
             get_string_value(t.metadata.get('project_name')),
             get_string_value(t.metadata.get('task_name', 'Unnamed Task'))
         ))
@@ -67,11 +74,13 @@ class GanttChartWidget(QWidget):
 
         # Calculate total width needed for current date range and zoom
         # This is the 'logical' width of the chart area based on days and current pixels_per_day
-        logical_chart_days_width = ( (self.end_date - self.start_date).days + 1) * self.get_pixels_per_day()
+        total_days = (self.end_date - self.start_date).days + 1
+        if total_days <= 0:
+            total_days = 1
+        logical_chart_days_width = total_days * self.get_pixels_per_day()
         
         # The total width is name column + logical chart width.
-        # Ensure it's at least the visible widget width if content is smaller horizontally.
-        content_width = self.name_column_width + max(0, int(logical_chart_days_width))
+        content_width = self.name_column_width + int(logical_chart_days_width)
         
         # QScrollArea will use this size to determine scroll ranges.
         return QSize(content_width, content_height)
@@ -160,12 +169,7 @@ class GanttChartWidget(QWidget):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            # To correctly map `event.pos()` (which is viewport-relative) to the `task_rects`
-            # (which are in the logical coordinate system of the *entire* content),
-            # we need to account for the QScrollArea's current scroll offsets.
-            
-            # self.parent() is the QViewport, self.parent().parent() is the QScrollArea
-            scroll_area_widget = self.parentWidget().parentWidget() 
+            scroll_area_widget = self.parentWidget().parentWidget()
             h_scroll_offset = 0
             v_scroll_offset = 0
 
@@ -173,17 +177,43 @@ class GanttChartWidget(QWidget):
                 h_scroll_offset = scroll_area_widget.horizontalScrollBar().value()
                 v_scroll_offset = scroll_area_widget.verticalScrollBar().value()
             
-            # Translate mouse position from viewport coordinates to logical content coordinates
             logical_mouse_x = event.pos().x() + h_scroll_offset
             logical_mouse_y = event.pos().y() + v_scroll_offset
 
             for task_obj, rect in self.task_rects:
-                # rect is already in logical content coordinates.
-                # Now compare against the logical mouse position.
                 if rect.contains(logical_mouse_x, logical_mouse_y):
+                    self.dragging = True
+                    self.drag_task = task_obj
+                    self.drag_start_pos = event.pos()
+                    self.drag_start_date = task_obj.metadata['date_start']
                     self.task_clicked.emit(task_obj)
                     break
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self.dragging:
+            delta_x = event.pos().x() - self.drag_start_pos.x()
+            pixels_per_day = self.get_pixels_per_day()
+            days_delta = int(delta_x / pixels_per_day)
+
+            new_start_date = self.drag_start_date + timedelta(days=days_delta)
+
+            duration = self.drag_task.metadata['date_end'] - self.drag_task.metadata['date_start']
+            new_end_date = new_start_date + duration
+
+            self.drag_task.metadata['date_start'] = new_start_date
+            self.drag_task.metadata['date_end'] = new_end_date
+
+            self.update()
+
+    def mouseReleaseEvent(self, event):
+        if self.dragging:
+            self.dragging = False
+            self.drag_task.is_dirty = True
+            self.task_clicked.emit(self.drag_task)
+            self.drag_task = None
+            self.drag_start_pos = None
+            self.drag_start_date = None
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -296,6 +326,17 @@ class GanttChartWidget(QWidget):
 
                 # --- Draw Task Readout on the Bar ---
                 task_name = task.metadata.get('task_name', 'Unnamed Task')
+                project_id = task.metadata.get('project_name', '')
+                cost_code = task.metadata.get('cost_code', '')
+
+                # Ensure project_id and cost_code are strings
+                if isinstance(project_id, list):
+                    project_id = project_id[0] if project_id else ''
+                if isinstance(cost_code, list):
+                    cost_code = cost_code[0] if cost_code else ''
+
+                task_info = f"{project_id} - {cost_code} - {task_name}"
+
                 painter.setPen(QPen(QColor(255, 255, 255))) # White text for readability on colored bar
                 font_size_bar_text = 8 # Base font size for text on bars
                 if width_on_canvas < 50: # Adjust if bar is too narrow
@@ -309,7 +350,7 @@ class GanttChartWidget(QWidget):
                 
                 # Elide text if it's too long
                 font_metrics = QFontMetrics(painter.font())
-                elided_text = font_metrics.elidedText(task_name, Qt.TextElideMode.ElideRight, int(bar_text_rect.width()))
+                elided_text = font_metrics.elidedText(task_info, Qt.TextElideMode.ElideRight, int(bar_text_rect.width()))
                 
                 painter.drawText(bar_text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, elided_text)
 
@@ -353,3 +394,46 @@ class GanttChartWidget(QWidget):
                 elided_name = font_metrics_name.elidedText(task_name, Qt.TextElideMode.ElideRight, int(name_rect.width()))
                 
                 painter.drawText(name_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, elided_name)
+
+        # --- Draw Task Links ---
+        painter.setPen(QPen(QColor(255, 255, 255), 1, Qt.PenStyle.DashLine))
+        for task in self.tasks_to_display:
+            if task.linked_tasks:
+                for linked_task_id in task.linked_tasks:
+                    # Find the linked task in the list of all tasks
+                    linked_task = next((t for t in self.tasks if t.metadata.get('vibe_id') == linked_task_id), None)
+                    if linked_task:
+                        # Find the rectangles for the two tasks
+                        task_rect = next((rect for t, rect in self.task_rects if t == task), None)
+
+                        # The linked task might not be in the visible area, so we need to calculate its rect
+                        task_start_date = linked_task.metadata.get('date_start')
+                        task_end_date = linked_task.metadata.get('date_end')
+                        if not (isinstance(task_start_date, date) and isinstance(task_end_date, date)):
+                            continue
+
+                        days_from_view_start = (task_start_date - self.start_date).days
+                        task_duration_days = (task_end_date - task_start_date).days + 1
+                        pixels_per_day = self.get_pixels_per_day()
+                        x_start_on_canvas = self.name_column_width + int(days_from_view_start * pixels_per_day)
+                        width_on_canvas = int(task_duration_days * pixels_per_day)
+
+                        linked_task_index = -1
+                        try:
+                            linked_task_index = self.tasks_to_display.index(linked_task)
+                        except ValueError:
+                            # The linked task is not in the displayed tasks
+                            pass
+
+                        if linked_task_index != -1:
+                            y_on_canvas = self.header_height + linked_task_index * (self.task_height + self.task_spacing)
+                            linked_task_rect = QRectF(x_start_on_canvas, y_on_canvas, width_on_canvas, self.task_height)
+                        else:
+                            linked_task_rect = None
+
+
+                        if task_rect and linked_task_rect:
+                            # Draw a line from the end of the current task to the start of the linked task
+                            start_point = QPointF(task_rect.right(), task_rect.center().y())
+                            end_point = QPointF(linked_task_rect.left(), linked_task_rect.center().y())
+                            painter.drawLine(start_point, end_point)
