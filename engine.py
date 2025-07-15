@@ -1,7 +1,6 @@
 import frontmatter
 import uuid
 from pathlib import Path
-from tkinter import filedialog, Tk
 from datetime import datetime, date, timedelta
 
 class VibeTask:
@@ -56,7 +55,7 @@ def validate_task_data(task_metadata):
         end_date = parse_date_value(task_metadata.get('date_due'))
         if end_date is not None:
             issues.append("using_date_due_for_date_end")
-    
+
     if end_date is None: # If still no end_date, default
         issues.append("missing_date_end")
         end_date = start_date + timedelta(days=1)
@@ -72,14 +71,8 @@ def validate_task_data(task_metadata):
 
     return issues if issues else None
 
-def ingest_project_data():
+def ingest_project_data(root_path_str):
     """Scans, parses, and VALIDATES project files."""
-    print("Initializing Vibe Engine... Please select your root project folder.")
-    root = Tk()
-    root.withdraw()
-    root_path_str = filedialog.askdirectory(title="Select Root Project Folder")
-    root.destroy()
-
     if not root_path_str:
         print("No folder selected. Aborting.")
         return [], []
@@ -102,7 +95,7 @@ def ingest_project_data():
             # The validation function will ensure 'date_start' and 'date_end' are proper date objects
             temp_metadata_for_validation = task_post.metadata.copy()
             validation_issues = validate_task_data(temp_metadata_for_validation)
-            
+
             # Apply the (potentially corrected) metadata back to the task_post
             task_post.metadata.update(temp_metadata_for_validation)
 
