@@ -5,16 +5,13 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QLabel, QMenuBar,
                              QStatusBar, QWidget, QVBoxLayout, QListWidget,
                              QSplitter, QPushButton, QAbstractItemView, QFormLayout,
                              QLineEdit, QTextEdit, QComboBox, QMessageBox, QWidget, QSizePolicy,
-                             QScrollArea) # Import QScrollArea
+                             QScrollArea)
 from PyQt6.QtGui import QAction, QPainter, QColor, QPen, QTextOption, QFont
 from PyQt6.QtCore import Qt, QRectF, QDate, pyqtSignal, QPointF
 from PyQt6.QtPrintSupport import QPrinter, QPrintDialog
-
 from datetime import date, timedelta, datetime
-
 from engine import ingest_project_data, VibeTask, validate_task_data
-from GanttChartWidget import GanttChartWidget # generate_color_from_text is now in GanttChartWidget
-
+from GanttChartWidget import GanttChartWidget
 import frontmatter
 
 DARK_THEME_QSS = """
@@ -67,7 +64,6 @@ class DetailsPanel(QWidget):
         self.setDisabled(True)
         layout = QFormLayout()
         layout.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
-
         self.task_name_edit = QLineEdit()
         self.project_name_edit = QLineEdit()
         self.date_start_edit = QLineEdit()
@@ -199,6 +195,10 @@ class VibeGanttApp(QMainWindow):
         self._create_menu_bar()
         self._setup_ui()
         self.load_project() # Automatically load project on startup
+
+    def closeEvent(self, event):
+        QApplication.instance().quit()
+        event.accept()
 
     def _setup_ui(self):
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -388,7 +388,7 @@ class VibeGanttApp(QMainWindow):
 
                     post_to_dump.metadata = clean_metadata
                     
-                    with open(temp_path, 'w', encoding='utf-8') as f:
+                    with open(temp_path, 'wb') as f:
                         frontmatter.dump(post_to_dump, f)
                     os.replace(temp_path, task.file_path)
                     task.is_dirty = False
@@ -431,8 +431,6 @@ class VibeGanttApp(QMainWindow):
             self.statusBar().showMessage("Gantt Chart printed successfully.", 3000)
         else:
             self.statusBar().showMessage("Print cancelled.", 3000)
-
-import os
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)

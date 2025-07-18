@@ -10,6 +10,7 @@ class VibeTask:
         self.metadata = metadata
         self.content = content
         self.is_dirty = False # Flag to track unsaved changes
+        self.linked_tasks = []
 
     def __repr__(self):
         task_name = self.metadata.get('task_name', 'Unnamed Task')
