@@ -1,7 +1,6 @@
 import frontmatter
 import uuid
 from pathlib import Path
-from tkinter import filedialog, Tk
 from datetime import datetime, date, timedelta
 
 class VibeTask:
@@ -11,6 +10,8 @@ class VibeTask:
         self.metadata = metadata
         self.content = content
         self.is_dirty = False # Flag to track unsaved changes
+        self.linked_tasks = metadata.get('linked_tasks', [])
+        self.predecessor_tasks = metadata.get('predecessor_tasks', [])
 
     def __repr__(self):
         task_name = self.metadata.get('task_name', 'Unnamed Task')
@@ -56,7 +57,7 @@ def validate_task_data(task_metadata):
         end_date = parse_date_value(task_metadata.get('date_due'))
         if end_date is not None:
             issues.append("using_date_due_for_date_end")
-    
+
     if end_date is None: # If still no end_date, default
         issues.append("missing_date_end")
         end_date = start_date + timedelta(days=1)
@@ -72,14 +73,8 @@ def validate_task_data(task_metadata):
 
     return issues if issues else None
 
-def ingest_project_data():
+def ingest_project_data(root_path_str):
     """Scans, parses, and VALIDATES project files."""
-    print("Initializing Vibe Engine... Please select your root project folder.")
-    root = Tk()
-    root.withdraw()
-    root_path_str = filedialog.askdirectory(title="Select Root Project Folder")
-    root.destroy()
-
     if not root_path_str:
         print("No folder selected. Aborting.")
         return [], []
@@ -102,7 +97,7 @@ def ingest_project_data():
             # The validation function will ensure 'date_start' and 'date_end' are proper date objects
             temp_metadata_for_validation = task_post.metadata.copy()
             validation_issues = validate_task_data(temp_metadata_for_validation)
-            
+
             # Apply the (potentially corrected) metadata back to the task_post
             task_post.metadata.update(temp_metadata_for_validation)
 
@@ -111,12 +106,24 @@ def ingest_project_data():
                 ingestion_errors.append(error_message)
 
             if 'vibe_id' not in task_post.metadata:
-                new_id = str(uuid.uuid4())
-                task_post.metadata['vibe_id'] = new_id
-                task_obj = VibeTask(file, task_post.metadata, task_post.content)
-                task_obj.is_dirty = True
+                task_post.metadata['vibe_id'] = str(uuid.uuid4())
+            # Ensure linked_tasks is a list
+            linked_tasks = task_post.metadata.get('linked_tasks', [])
+            if isinstance(linked_tasks, str):
+                task_post.metadata['linked_tasks'] = [task.strip() for task in linked_tasks.split(',') if task.strip()]
             else:
-                task_obj = VibeTask(file, task_post.metadata, task_post.content)
+                task_post.metadata['linked_tasks'] = linked_tasks
+            # Ensure predecessor_tasks is a list
+            predecessor_tasks = task_post.metadata.get('predecessor_tasks', [])
+            if isinstance(predecessor_tasks, str):
+                task_post.metadata['predecessor_tasks'] = [task.strip() for task in predecessor_tasks.split(',') if task.strip()]
+            else:
+                task_post.metadata['predecessor_tasks'] = predecessor_tasks
+
+            task_obj = VibeTask(file, task_post.metadata, task_post.content)
+            if 'vibe_id' not in task_post.metadata:
+                task_obj.is_dirty = True
+
 
             all_tasks.append(task_obj)
 

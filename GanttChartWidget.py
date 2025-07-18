@@ -35,10 +35,13 @@ class GanttChartWidget(QWidget):
         self.last_zoom_time = datetime.now() # For zoom cooldown
         self.zoom_cooldown_ms = 100 # Milliseconds
 
-        self.dragging = False
+        self.dragging = None # Can be 'start', 'end', 'body', or 'link'
         self.drag_task = None
         self.drag_start_pos = None
-        self.drag_start_date = None
+        self.drag_original_start_date = None
+        self.drag_original_end_date = None
+        self.linking_start_task = None
+        self.linking_end_pos = None
 
         # Set a minimum size to ensure it's always viewable even with no tasks
         self.setMinimumSize(QSize(200 + self.name_column_width, self.header_height + 100)) # Min visible area
@@ -169,51 +172,114 @@ class GanttChartWidget(QWidget):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            scroll_area_widget = self.parentWidget().parentWidget()
-            h_scroll_offset = 0
-            v_scroll_offset = 0
-
-            if isinstance(scroll_area_widget, QScrollArea):
-                h_scroll_offset = scroll_area_widget.horizontalScrollBar().value()
-                v_scroll_offset = scroll_area_widget.verticalScrollBar().value()
+            h_scroll_offset = self.parent().horizontalScrollBar().value() if self.parent() and isinstance(self.parent(), QScrollArea) else 0
+            logical_mouse_pos = event.pos() + QPointF(h_scroll_offset, 0)
             
-            logical_mouse_x = event.pos().x() + h_scroll_offset
-            logical_mouse_y = event.pos().y() + v_scroll_offset
-
             for task_obj, rect in self.task_rects:
-                if rect.contains(logical_mouse_x, logical_mouse_y):
-                    self.dragging = True
+                handle_width = 8
+                start_handle = QRectF(rect.left(), rect.top(), handle_width, rect.height())
+                end_handle = QRectF(rect.right() - handle_width, rect.top(), handle_width, rect.height())
+
+                if end_handle.contains(logical_mouse_pos):
+                    self.dragging = 'link'
+                    self.linking_start_task = task_obj
+                    self.drag_start_pos = logical_mouse_pos
+                elif start_handle.contains(logical_mouse_pos):
+                    self.dragging = 'start'
+                elif rect.contains(logical_mouse_pos):
+                    self.dragging = 'body'
+
+                if self.dragging:
                     self.drag_task = task_obj
-                    self.drag_start_pos = event.pos()
-                    self.drag_start_date = task_obj.metadata['date_start']
+                    self.drag_start_pos = logical_mouse_pos
+                    self.drag_original_start_date = task_obj.metadata['date_start']
+                    self.drag_original_end_date = task_obj.metadata['date_end']
                     self.task_clicked.emit(task_obj)
-                    break
+                    self.update() # To change cursor
+                    break # Found a task to drag, stop searching
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
-        if self.dragging:
-            delta_x = event.pos().x() - self.drag_start_pos.x()
-            pixels_per_day = self.get_pixels_per_day()
-            days_delta = int(delta_x / pixels_per_day)
+        if not self.dragging or not self.drag_task:
+            # Update cursor based on hover
+            h_scroll_offset = self.parent().horizontalScrollBar().value() if self.parent() and isinstance(self.parent(), QScrollArea) else 0
+            logical_mouse_pos = event.pos() + QPointF(h_scroll_offset, 0)
 
-            new_start_date = self.drag_start_date + timedelta(days=days_delta)
+            cursor_set = False
+            for _, rect in self.task_rects:
+                handle_width = 8
+                start_handle = QRectF(rect.left(), rect.top(), handle_width, rect.height())
+                end_handle = QRectF(rect.right() - handle_width, rect.top(), handle_width, rect.height())
+                if start_handle.contains(logical_mouse_pos) or end_handle.contains(logical_mouse_pos):
+                    self.setCursor(Qt.CursorShape.SizeHorCursor)
+                    cursor_set = True
+                    break
+            if not cursor_set:
+                self.setCursor(Qt.CursorShape.ArrowCursor)
 
-            duration = self.drag_task.metadata['date_end'] - self.drag_task.metadata['date_start']
+            return
+
+        h_scroll_offset = self.parent().horizontalScrollBar().value() if self.parent() and isinstance(self.parent(), QScrollArea) else 0
+        logical_mouse_pos = event.pos() + QPointF(h_scroll_offset, 0)
+
+        delta_x = logical_mouse_pos.x() - self.drag_start_pos.x()
+        pixels_per_day = self.get_pixels_per_day()
+        days_delta = round(delta_x / pixels_per_day)
+
+        if self.dragging == 'body':
+            new_start_date = self.drag_original_start_date + timedelta(days=days_delta)
+            duration = self.drag_original_end_date - self.drag_original_start_date
             new_end_date = new_start_date + duration
-
             self.drag_task.metadata['date_start'] = new_start_date
             self.drag_task.metadata['date_end'] = new_end_date
+        elif self.dragging == 'start':
+            new_start_date = self.drag_original_start_date + timedelta(days=days_delta)
+            if new_start_date <= self.drag_original_end_date:
+                self.drag_task.metadata['date_start'] = new_start_date
+        elif self.dragging == 'end':
+            new_end_date = self.drag_original_end_date + timedelta(days=days_delta)
+            if new_end_date >= self.drag_original_start_date:
+                self.drag_task.metadata['date_end'] = new_end_date
+        elif self.dragging == 'link':
+            self.linking_end_pos = logical_mouse_pos
 
-            self.update()
+        self.update()
 
     def mouseReleaseEvent(self, event):
+        if self.dragging == 'link' and self.linking_start_task:
+            h_scroll_offset = self.parent().horizontalScrollBar().value() if self.parent() and isinstance(self.parent(), QScrollArea) else 0
+            logical_mouse_pos = event.pos() + QPointF(h_scroll_offset, 0)
+
+            for task_obj, rect in self.task_rects:
+                if rect.contains(logical_mouse_pos) and task_obj != self.linking_start_task:
+                    # Link created
+                    predecessor_id = self.linking_start_task.metadata.get('vibe_id')
+                    successor_id = task_obj.metadata.get('vibe_id')
+
+                    if successor_id not in self.linking_start_task.linked_tasks:
+                        self.linking_start_task.linked_tasks.append(successor_id)
+                        self.linking_start_task.is_dirty = True
+
+                    if predecessor_id not in task_obj.predecessor_tasks:
+                        task_obj.predecessor_tasks.append(predecessor_id)
+                        task_obj.is_dirty = True
+
+                    break # Link is made, stop checking
+
         if self.dragging:
-            self.dragging = False
-            self.drag_task.is_dirty = True
-            self.task_clicked.emit(self.drag_task)
+            self.dragging = None
+            if self.drag_task:
+                self.drag_task.is_dirty = True
+                self.task_clicked.emit(self.drag_task) # To update details panel
+
             self.drag_task = None
             self.drag_start_pos = None
-            self.drag_start_date = None
+            self.drag_original_start_date = None
+            self.drag_original_end_date = None
+            self.linking_start_task = None
+            self.linking_end_pos = None
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+            self.update()
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -256,10 +322,14 @@ class GanttChartWidget(QWidget):
         elif pixels_per_day > 40:
             date_format = "%b %d"
             font_size_header = 9
+        elif pixels_per_day < 20:
+            date_format = "%a" # e.g., M
+            font_size_header = 8
         elif pixels_per_day < 15:
             date_format = "%b '%y" # e.g., Jul '25
             font_size_header = 7
         
+
         painter.setFont(QFont("Segoe UI", font_size_header)) # Set font for dates
 
         # Iterate through days for vertical lines and date labels
@@ -267,6 +337,10 @@ class GanttChartWidget(QWidget):
             current_date = self.start_date + timedelta(days=i)
             # x position on the *full logical chart canvas*
             x_on_canvas = self.name_column_width + int(i * pixels_per_day)
+
+            # Weekend shading
+            if current_date.weekday() >= 5: # 5=Saturday, 6=Sunday
+                painter.fillRect(x_on_canvas, visible_rect.top() + self.header_height, pixels_per_day, visible_rect.height(), QColor(40, 40, 40))
 
             # Only draw grid line if it's within the visible horizontal range of the chart area
             if x_on_canvas >= visible_rect.left() + self.name_column_width - 1 and \
@@ -434,6 +508,118 @@ class GanttChartWidget(QWidget):
 
                         if task_rect and linked_task_rect:
                             # Draw a line from the end of the current task to the start of the linked task
+                            start_point = QPointF(task_rect.right(), task_rect.center().y())
+                            end_point = QPointF(linked_task_rect.left(), linked_task_rect.center().y())
+                            painter.drawLine(start_point, end_point)
+
+        # --- Draw Temporary Linking Line ---
+        if self.dragging == 'link' and self.linking_start_task and self.linking_end_pos:
+            start_task_rect = next((rect for t, rect in self.task_rects if t == self.linking_start_task), None)
+            if start_task_rect:
+                start_point = QPointF(start_task_rect.right(), start_task_rect.center().y())
+                painter.setPen(QPen(QColor(255, 0, 0), 2, Qt.PenStyle.DotLine))
+                painter.drawLine(start_point, self.linking_end_pos)
+
+    def render_for_print(self, painter):
+        # This is a modified version of paintEvent for printing the entire chart
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # Use the full size of the widget for printing
+        full_rect = self.rect()
+
+        # Draw background
+        painter.fillRect(full_rect, QColor(43, 43, 43))
+
+        total_days = (self.end_date - self.start_date).days + 1
+        if total_days <= 0: total_days = 1
+        pixels_per_day = self.get_pixels_per_day()
+
+        # --- Draw Date Header ---
+        painter.fillRect(self.name_column_width, 0,
+                         full_rect.width() - self.name_column_width, self.header_height,
+                         QColor(50, 50, 50))
+
+        painter.setPen(QPen(QColor(100, 100, 100)))
+        painter.drawLine(self.name_column_width, self.header_height,
+                         full_rect.width(), self.header_height)
+
+        date_format = "%b %d"
+        font_size_header = 9
+        painter.setFont(QFont("Segoe UI", font_size_header))
+
+        for i in range(total_days):
+            current_date = self.start_date + timedelta(days=i)
+            x_on_canvas = self.name_column_width + int(i * pixels_per_day)
+
+            # Weekend shading
+            if current_date.weekday() >= 5: # 5=Saturday, 6=Sunday
+                painter.fillRect(x_on_canvas, self.header_height, pixels_per_day, full_rect.height() - self.header_height, QColor(40, 40, 40))
+
+            painter.drawLine(x_on_canvas, self.header_height, x_on_canvas, full_rect.bottom())
+
+            date_text = current_date.strftime(date_format)
+            text_rect_header = QRectF(x_on_canvas, 0, pixels_per_day, self.header_height - 5)
+            painter.setPen(QPen(QColor(211, 211, 211)))
+            painter.drawText(text_rect_header, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom, date_text)
+
+        # --- Draw Tasks ---
+        task_y_start_offset = self.header_height
+        for task_index, task in enumerate(self.tasks_to_display):
+            task_start_date = task.metadata.get('date_start')
+            task_end_date = task.metadata.get('date_end')
+
+            if not (isinstance(task_start_date, date) and isinstance(task_end_date, date)):
+                continue
+
+            days_from_view_start = (task_start_date - self.start_date).days
+            task_duration_days = (task_end_date - task_start_date).days + 1
+
+            x_start_on_canvas = self.name_column_width + int(days_from_view_start * pixels_per_day)
+            width_on_canvas = int(task_duration_days * pixels_per_day)
+            height = self.task_height
+            y_on_canvas = task_y_start_offset + task_index * (self.task_height + self.task_spacing)
+
+            task_color = generate_color_from_text(task.metadata.get('project_name', ''))
+            painter.fillRect(x_start_on_canvas, y_on_canvas, width_on_canvas, height, task_color)
+            painter.setPen(QPen(QColor(0, 0, 0), 1)) # Black border
+            painter.drawRect(x_start_on_canvas, y_on_canvas, width_on_canvas, height)
+
+            task_name = task.metadata.get('task_name', 'Unnamed Task')
+            painter.setPen(QPen(QColor(255, 255, 255)))
+            font_size_bar_text = 8
+            painter.setFont(QFont("Segoe UI", font_size_bar_text))
+            text_padding = 2
+            bar_text_rect = QRectF(x_start_on_canvas + text_padding, y_on_canvas + text_padding,
+                                   width_on_canvas - 2 * text_padding, height - 2 * text_padding)
+            font_metrics = QFontMetrics(painter.font())
+            elided_text = font_metrics.elidedText(task_name, Qt.TextElideMode.ElideRight, int(bar_text_rect.width()))
+            painter.drawText(bar_text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, elided_text)
+
+        # --- Draw Fixed Name Column ---
+        painter.fillRect(0, 0, self.name_column_width, full_rect.height(), QColor(50, 50, 50))
+        painter.setPen(QPen(QColor(100, 100, 100), 1))
+        painter.drawLine(self.name_column_width, 0, self.name_column_width, full_rect.bottom())
+
+        painter.setFont(QFont("Segoe UI", 9))
+        for task_index, task in enumerate(self.tasks_to_display):
+            y_on_canvas = task_y_start_offset + task_index * (self.task_height + self.task_spacing)
+            task_name = task.metadata.get('task_name', 'Unnamed Task')
+            painter.setPen(QPen(QColor(211, 211, 211)))
+            name_rect = QRectF(5, y_on_canvas, self.name_column_width - 10, self.task_height)
+            font_metrics_name = QFontMetrics(painter.font())
+            elided_name = font_metrics_name.elidedText(task_name, Qt.TextElideMode.ElideRight, int(name_rect.width()))
+            painter.drawText(name_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, elided_name)
+
+        # --- Draw Task Links ---
+        painter.setPen(QPen(QColor(255, 255, 255), 1, Qt.PenStyle.DashLine))
+        for task in self.tasks_to_display:
+            if task.linked_tasks:
+                for linked_task_id in task.linked_tasks:
+                    linked_task = next((t for t in self.tasks if t.metadata.get('vibe_id') == linked_task_id), None)
+                    if linked_task:
+                        task_rect = next((rect for t, rect in self.task_rects if t == task), None)
+                        linked_task_rect = next((rect for t, rect in self.task_rects if t == linked_task), None)
+                        if task_rect and linked_task_rect:
                             start_point = QPointF(task_rect.right(), task_rect.center().y())
                             end_point = QPointF(linked_task_rect.left(), linked_task_rect.center().y())
                             painter.drawLine(start_point, end_point)

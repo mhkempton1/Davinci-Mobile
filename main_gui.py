@@ -1,19 +1,17 @@
 import sys
 import os
+from tkinter import filedialog, Tk
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QLabel, QMenuBar,
                              QStatusBar, QWidget, QVBoxLayout, QListWidget,
                              QSplitter, QPushButton, QAbstractItemView, QFormLayout,
                              QLineEdit, QTextEdit, QComboBox, QMessageBox, QWidget, QSizePolicy,
-                             QScrollArea) # Import QScrollArea
+                             QScrollArea)
 from PyQt6.QtGui import QAction, QPainter, QColor, QPen, QTextOption, QFont
 from PyQt6.QtCore import Qt, QRectF, QDate, pyqtSignal, QPointF
 from PyQt6.QtPrintSupport import QPrinter, QPrintDialog
-
 from datetime import date, timedelta, datetime
-
 from engine import ingest_project_data, VibeTask, validate_task_data
-from GanttChartWidget import GanttChartWidget # generate_color_from_text is now in GanttChartWidget
-
+from GanttChartWidget import GanttChartWidget
 import frontmatter
 
 DARK_THEME_QSS = """
@@ -66,7 +64,6 @@ class DetailsPanel(QWidget):
         self.setDisabled(True)
         layout = QFormLayout()
         layout.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
-
         self.task_name_edit = QLineEdit()
         self.project_name_edit = QLineEdit()
         self.date_start_edit = QLineEdit()
@@ -199,6 +196,10 @@ class VibeGanttApp(QMainWindow):
         self._setup_ui()
         self.load_project() # Automatically load project on startup
 
+    def closeEvent(self, event):
+        QApplication.instance().quit()
+        event.accept()
+
     def _setup_ui(self):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         self.filter_panel = QWidget()
@@ -278,7 +279,15 @@ class VibeGanttApp(QMainWindow):
         file_menu.addAction(exit_action)
 
     def load_project(self):
-        self.tasks, self.errors = ingest_project_data()
+        root = Tk()
+        root.withdraw()
+        root_path_str = filedialog.askdirectory(title="Select Root Project Folder")
+        root.destroy()
+        if not root_path_str:
+            self.statusBar().showMessage("Project loading cancelled.", 5000)
+            return
+
+        self.tasks, self.errors = ingest_project_data(root_path_str)
         status_message = f"Loaded {len(self.tasks)} tasks."
         if self.errors: status_message += f" Found {len(self.errors)} issues."
         self.statusBar().showMessage(status_message)
@@ -376,6 +385,8 @@ class VibeGanttApp(QMainWindow):
                     
                     if task.linked_tasks:
                         clean_metadata['linked_tasks'] = ", ".join(task.linked_tasks)
+                    if task.predecessor_tasks:
+                        clean_metadata['predecessor_tasks'] = ", ".join(task.predecessor_tasks)
 
                     post_to_dump.metadata = clean_metadata
                     
@@ -417,13 +428,11 @@ class VibeGanttApp(QMainWindow):
             painter.translate(printer.pageRect(QPrinter.Unit.Point).topLeft())
             painter.scale(scale_factor, scale_factor)
             
-            self.gantt_chart.render(painter)
+            self.gantt_chart.render_for_print(painter)
             painter.end()
             self.statusBar().showMessage("Gantt Chart printed successfully.", 3000)
         else:
             self.statusBar().showMessage("Print cancelled.", 3000)
-
-import os
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
