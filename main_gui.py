@@ -4,8 +4,7 @@ from tkinter import filedialog, Tk
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QLabel, QMenuBar,
                              QStatusBar, QWidget, QVBoxLayout, QListWidget,
                              QSplitter, QPushButton, QAbstractItemView, QFormLayout,
-                             QLineEdit, QTextEdit, QComboBox, QMessageBox, QWidget, QSizePolicy,
-                             QScrollArea)
+                             QLineEdit, QTextEdit, QComboBox, QMessageBox, QWidget, QSizePolicy)
 from PyQt6.QtGui import QAction, QPainter, QColor, QPen, QTextOption, QFont
 from PyQt6.QtCore import Qt, QRectF, QDate, pyqtSignal, QPointF
 from PyQt6.QtPrintSupport import QPrinter, QPrintDialog
@@ -224,18 +223,8 @@ class VibeGanttApp(QMainWindow):
 
         splitter.addWidget(self.filter_panel)
         
-        # --- QScrollArea for GanttChartWidget ---
-        self.gantt_scroll_area = QScrollArea()
-        self.gantt_scroll_area.setWidgetResizable(True) # Allow GanttChartWidget to stretch/shrink within scroll area
-        
         self.gantt_chart = GanttChartWidget()
-        self.gantt_scroll_area.setWidget(self.gantt_chart)
-        
-        # Enable scroll bars as needed based on sizeHint from GanttChartWidget
-        self.gantt_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.gantt_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        
-        splitter.addWidget(self.gantt_scroll_area) # Add the scroll area to the splitter
+        splitter.addWidget(self.gantt_chart)
         
         self.details_panel = DetailsPanel()
         splitter.addWidget(self.details_panel)
