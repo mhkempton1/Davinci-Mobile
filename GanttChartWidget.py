@@ -63,14 +63,14 @@ class GanttChartWidget(QWidget):
         self.start_date, self.end_date = start_date, end_date
         
         # Crucial: Tell parent layout/QScrollArea that our content size might have changed
-        self.updateGeometry() 
+        self.updateGeometry()
         self.update() # Request a repaint
 
     # Override sizeHint to tell QScrollArea how big the *total content* is
     def sizeHint(self):
         # Calculate the total height needed for all tasks
         total_tasks_height = len(self.tasks_to_display) * (self.task_height + self.task_spacing)
-        content_height = self.header_height + total_tasks_height
+        content_height = self.header_height + total_tasks_height + 20 # Add a buffer
 
         # Calculate total width needed for current date range and zoom
         # This is the 'logical' width of the chart area based on days and current pixels_per_day
@@ -80,7 +80,7 @@ class GanttChartWidget(QWidget):
         logical_chart_days_width = total_days * self.get_pixels_per_day()
         
         # The total width is name column + logical chart width.
-        content_width = self.name_column_width + int(logical_chart_days_width)
+        content_width = self.name_column_width + int(logical_chart_days_width) + 20 # Add a buffer
         
         # QScrollArea will use this size to determine scroll ranges.
         return QSize(content_width, content_height)
@@ -214,6 +214,104 @@ class GanttChartWidget(QWidget):
             self.drag_task = None
             self.drag_start_pos = None
             self.drag_start_date = None
+
+    def render(self, painter):
+        # This method is for printing or exporting the entire Gantt chart.
+        # It's similar to paintEvent but draws the whole chart, not just the visible part.
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # Use the full sizeHint for drawing dimensions
+        content_size = self.sizeHint()
+
+        # Draw background for the entire content area
+        painter.fillRect(QRectF(0, 0, content_size.width(), content_size.height()), QColor(43, 43, 43))
+
+        total_days = (self.end_date - self.start_date).days + 1
+        if total_days <= 0: total_days = 1
+        pixels_per_day = self.get_pixels_per_day()
+
+        # --- Draw Date Header ---
+        painter.fillRect(self.name_column_width, 0,
+                         content_size.width() - self.name_column_width, self.header_height,
+                         QColor(50, 50, 50))
+        painter.setPen(QPen(QColor(100, 100, 100)))
+        painter.drawLine(self.name_column_width, self.header_height,
+                         content_size.width(), self.header_height)
+
+        date_format = "%b %d"
+        font_size_header = 8
+        if pixels_per_day > 100:
+            date_format = "%a %b %d"
+            font_size_header = 10
+        elif pixels_per_day > 40:
+            date_format = "%b %d"
+            font_size_header = 9
+        elif pixels_per_day < 15:
+            date_format = "%b '%y"
+            font_size_header = 7
+        painter.setFont(QFont("Segoe UI", font_size_header))
+
+        for i in range(total_days):
+            current_date = self.start_date + timedelta(days=i)
+            x_on_canvas = self.name_column_width + int(i * pixels_per_day)
+            painter.drawLine(x_on_canvas, self.header_height, x_on_canvas, content_size.height())
+            if pixels_per_day > 15:
+                date_text = current_date.strftime(date_format)
+                text_rect_header = QRectF(x_on_canvas, 0, pixels_per_day, self.header_height - 5)
+                painter.setPen(QPen(QColor(211, 211, 211)))
+                painter.drawText(text_rect_header, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom, date_text)
+
+        # --- Draw Tasks ---
+        task_y_start_offset = self.header_height
+        for task_index, task in enumerate(self.tasks_to_display):
+            task_start_date, task_end_date = task.metadata.get('date_start'), task.metadata.get('date_end')
+            if not (isinstance(task_start_date, date) and isinstance(task_end_date, date)):
+                task_start_date, task_end_date = date.today(), date.today() + timedelta(days=1)
+
+            days_from_view_start = (task_start_date - self.start_date).days
+            task_duration_days = (task_end_date - task_start_date).days + 1
+            x_start_on_canvas = self.name_column_width + int(days_from_view_start * pixels_per_day)
+            width_on_canvas = int(task_duration_days * pixels_per_day)
+            height = self.task_height
+            y_on_canvas = task_y_start_offset + task_index * (self.task_height + self.task_spacing)
+
+            task_color = generate_color_from_text(task.metadata.get('project_name', ''))
+            painter.fillRect(x_start_on_canvas, y_on_canvas, width_on_canvas, height, task_color)
+            painter.setPen(QPen(QColor(0, 0, 0), 1))
+            painter.drawRect(x_start_on_canvas, y_on_canvas, width_on_canvas, height)
+
+            task_name = task.metadata.get('task_name', 'Unnamed Task')
+            project_id = task.metadata.get('project_name', '')
+            cost_code = task.metadata.get('cost_code', '')
+            if isinstance(project_id, list): project_id = project_id[0] if project_id else ''
+            if isinstance(cost_code, list): cost_code = cost_code[0] if cost_code else ''
+            task_info = f"{project_id} - {cost_code} - {task_name}"
+
+            painter.setPen(QPen(QColor(255, 255, 255)))
+            font_size_bar_text = 8
+            if width_on_canvas < 50: font_size_bar_text = 7
+            painter.setFont(QFont("Segoe UI", font_size_bar_text))
+            text_padding = 2
+            bar_text_rect = QRectF(x_start_on_canvas + text_padding, y_on_canvas + text_padding,
+                                   width_on_canvas - 2 * text_padding, height - 2 * text_padding)
+            font_metrics = QFontMetrics(painter.font())
+            elided_text = font_metrics.elidedText(task_info, Qt.TextElideMode.ElideRight, int(bar_text_rect.width()))
+            painter.drawText(bar_text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, elided_text)
+
+        # --- Draw Fixed Name Column ---
+        painter.fillRect(0, 0, self.name_column_width, content_size.height(), QColor(50, 50, 50))
+        painter.setPen(QPen(QColor(100, 100, 100), 1))
+        painter.drawLine(self.name_column_width, 0, self.name_column_width, content_size.height())
+
+        painter.setFont(QFont("Segoe UI", 9))
+        for task_index, task in enumerate(self.tasks_to_display):
+            y_on_canvas = task_y_start_offset + task_index * (self.task_height + self.task_spacing)
+            task_name = task.metadata.get('task_name', 'Unnamed Task')
+            painter.setPen(QPen(QColor(211, 211, 211)))
+            name_rect = QRectF(5, y_on_canvas, self.name_column_width - 10, self.task_height)
+            font_metrics_name = QFontMetrics(painter.font())
+            elided_name = font_metrics_name.elidedText(task_name, Qt.TextElideMode.ElideRight, int(name_rect.width()))
+            painter.drawText(name_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, elided_name)
 
     def paintEvent(self, event):
         painter = QPainter(self)

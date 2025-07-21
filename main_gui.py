@@ -405,29 +405,65 @@ class VibeGanttApp(QMainWindow):
         printer = QPrinter(QPrinter.PrinterMode.HighResolution)
         print_dialog = QPrintDialog(printer, self)
         if print_dialog.exec() == QPrintDialog.DialogCode.Accepted:
-            painter = QPainter(printer)
-            # Use QPrinter.Unit.Point for pageRect() for consistent results
-            page_rect = printer.pageRect(QPrinter.Unit.Point)
+            # Set a fixed high resolution for rendering the image
+            render_dpi = 300
 
             gantt_content_size = self.gantt_chart.sizeHint()
-            gantt_width = gantt_content_size.width()
-            gantt_height = gantt_content_size.height()
-
-            if gantt_width == 0 or gantt_height == 0:
-                QMessageBox.warning(self, "Print Error", "Gantt chart has no content size to print. Load tasks first.")
-                painter.end()
+            if gantt_content_size.width() == 0 or gantt_content_size.height() == 0:
+                QMessageBox.warning(self, "Print Error", "Gantt chart has no content to print.")
                 return
 
-            scale_factor_x = page_rect.width() / gantt_width
-            scale_factor_y = page_rect.height() / gantt_height
-            scale_factor = min(scale_factor_x, scale_factor_y)
+            # Create an image with a size that matches the aspect ratio of the content
+            # and is scaled by our desired DPI for high quality.
+            image_size = QSize(
+                int(gantt_content_size.width() * render_dpi / 96), # 96 is a typical screen DPI
+                int(gantt_content_size.height() * render_dpi / 96)
+            )
+            image = QImage(image_size, QImage.Format.Format_ARGB32)
+            image.fill(Qt.GlobalColor.white) # White background for printing
 
-            # Translate to the printable area's top-left margin and then scale
-            painter.translate(printer.pageRect(QPrinter.Unit.Point).topLeft())
-            painter.scale(scale_factor, scale_factor)
+            # Create a painter to draw the Gantt chart onto the QImage
+            image_painter = QPainter(image)
+            image_painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+            # Use a QTransform to scale the painter to fit the content to the image
+            source_rect = QRectF(0, 0, gantt_content_size.width(), gantt_content_size.height())
+            target_rect = QRectF(0, 0, image.width(), image.height())
+
+            transform = QTransform()
+            transform.scale(target_rect.width() / source_rect.width(), target_rect.height() / source_rect.height())
+            image_painter.setTransform(transform)
+
+            # Render the full Gantt chart widget to the image
+            self.gantt_chart.render(image_painter)
+            image_painter.end()
+
+            # Now, draw the high-resolution image onto the printer
+            printer_painter = QPainter(printer)
+            page_rect = printer.pageRect(QPrinter.Unit.Point) # Use points for physical measurements
+
+            # Scale the image to fit the printable area of the page while maintaining aspect ratio
+            image_aspect_ratio = image.width() / image.height()
+            page_aspect_ratio = page_rect.width() / page_rect.height()
+
+            if image_aspect_ratio > page_aspect_ratio:
+                # Image is wider than page -> scale to page width
+                scaled_width = page_rect.width()
+                scaled_height = scaled_width / image_aspect_ratio
+            else:
+                # Image is taller than page -> scale to page height
+                scaled_height = page_rect.height()
+                scaled_width = scaled_height * image_aspect_ratio
+
+            # Center the image on the page
+            x_offset = (page_rect.width() - scaled_width) / 2
+            y_offset = (page_rect.height() - scaled_height) / 2
+
+            target_draw_rect = QRectF(page_rect.left() + x_offset, page_rect.top() + y_offset, scaled_width, scaled_height)
+
+            printer_painter.drawImage(target_draw_rect, image)
+            printer_painter.end()
             
-            self.gantt_chart.render(painter)
-            painter.end()
             self.statusBar().showMessage("Gantt Chart printed successfully.", 3000)
         else:
             self.statusBar().showMessage("Print cancelled.", 3000)
