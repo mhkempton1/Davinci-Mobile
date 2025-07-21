@@ -35,6 +35,8 @@ class GanttChartWidget(QWidget):
         self.last_zoom_time = datetime.now() # For zoom cooldown
         self.zoom_cooldown_ms = 100 # Milliseconds
 
+        self.pan_offset = QPointF(0, 0)
+
         self.dragging = False
         self.drag_task = None
         self.drag_start_pos = None
@@ -109,9 +111,16 @@ class GanttChartWidget(QWidget):
         if modifiers == Qt.KeyboardModifier.ControlModifier:
             self.zoom(delta > 0, event.position().x())
             event.accept()
+        elif modifiers == Qt.KeyboardModifier.ShiftModifier:
+            # Pan horizontally with Shift+Scroll
+            self.pan_offset.setX(self.pan_offset.x() - delta)
+            self.update()
+            event.accept()
         else:
-            # Let the parent QScrollArea handle the scrolling
-            event.ignore()
+            # Pan vertically with normal scroll
+            self.pan_offset.setY(self.pan_offset.y() - delta)
+            self.update()
+            event.accept()
 
 
     def keyPressEvent(self, event):
@@ -164,8 +173,10 @@ class GanttChartWidget(QWidget):
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             modifiers = QApplication.keyboardModifiers()
+            # Translate mouse position by pan offset for accurate detection
+            panned_pos = event.pos() - self.pan_offset
             for task_obj, rect in self.task_rects:
-                if rect.contains(event.pos()):
+                if rect.contains(panned_pos):
                     if modifiers == Qt.KeyboardModifier.ShiftModifier:
                         self.linking_mode = True
                         self.link_start_task = task_obj
@@ -174,18 +185,19 @@ class GanttChartWidget(QWidget):
                     else:
                         self.dragging = True
                         self.drag_task = task_obj
-                        self.drag_start_pos = event.pos()
+                        self.drag_start_pos = panned_pos
                         self.drag_start_date = task_obj.metadata['date_start']
                         self.task_clicked.emit(task_obj)
                         break
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        panned_pos = event.pos() - self.pan_offset
         if self.linking_mode:
-            self.link_end_pos = event.pos()
+            self.link_end_pos = panned_pos
             self.update()
         elif self.dragging:
-            delta_x = event.pos().x() - self.drag_start_pos.x()
+            delta_x = panned_pos.x() - self.drag_start_pos.x()
             pixels_per_day = self.get_pixels_per_day()
             if pixels_per_day == 0: return
             days_delta = int(round(delta_x / pixels_per_day))
@@ -208,9 +220,10 @@ class GanttChartWidget(QWidget):
                     self.update_task_and_dependencies(linked_task, task.metadata['date_end'] + timedelta(days=1))
 
     def mouseReleaseEvent(self, event):
+        panned_pos = event.pos() - self.pan_offset
         if self.linking_mode:
             for task_obj, rect in self.task_rects:
-                if rect.contains(event.pos()) and task_obj != self.link_start_task:
+                if rect.contains(panned_pos) and task_obj != self.link_start_task:
                     # Add link from self.link_start_task to task_obj
                     if 'linked_tasks' not in self.link_start_task.metadata:
                         self.link_start_task.metadata['linked_tasks'] = []
@@ -229,7 +242,7 @@ class GanttChartWidget(QWidget):
             self.drag_start_pos = None
             self.drag_start_date = None
 
-    def render(self, painter):
+    def render(self, painter, clip_rect=None):
         # This method is for printing or exporting the entire Gantt chart.
         # It's similar to paintEvent but draws the whole chart, not just the visible part.
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -238,7 +251,10 @@ class GanttChartWidget(QWidget):
         content_size = self.sizeHint()
 
         # Draw background for the entire content area
-        painter.fillRect(QRectF(0, 0, content_size.width(), content_size.height()), QColor(43, 43, 43))
+        painter.fillRect(self.rect(), QColor(43, 43, 43))
+
+        painter.translate(self.pan_offset)
+
 
         total_days = (self.end_date - self.start_date).days + 1
         if total_days <= 0: total_days = 1
@@ -313,9 +329,11 @@ class GanttChartWidget(QWidget):
             painter.drawText(bar_text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, elided_text)
 
         # --- Draw Fixed Name Column ---
-        painter.fillRect(0, 0, self.name_column_width, content_size.height(), QColor(50, 50, 50))
+        painter.save()
+        painter.translate(-self.pan_offset) # Untranslate to draw fixed elements
+        painter.fillRect(0, 0, self.name_column_width, self.height(), QColor(50, 50, 50))
         painter.setPen(QPen(QColor(100, 100, 100), 1))
-        painter.drawLine(self.name_column_width, 0, self.name_column_width, content_size.height())
+        painter.drawLine(self.name_column_width, 0, self.name_column_width, self.height())
 
         painter.setFont(QFont("Segoe UI", 9))
         for task_index, task in enumerate(self.tasks_to_display):
@@ -326,6 +344,7 @@ class GanttChartWidget(QWidget):
             font_metrics_name = QFontMetrics(painter.font())
             elided_name = font_metrics_name.elidedText(task_name, Qt.TextElideMode.ElideRight, int(name_rect.width()))
             painter.drawText(name_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, elided_name)
+        painter.restore()
         
         # --- Draw Task Links ---
         painter.setPen(QPen(QColor(255, 255, 255), 1, Qt.PenStyle.DashLine))
@@ -353,20 +372,5 @@ class GanttChartWidget(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        # The QScrollArea handles the painter's translation, so we just draw the whole chart.
-        # The painter is clipped to the visible area.
-        self.render(painter)
-
-        # --- Draw linking line ---
-        if self.linking_mode and self.link_start_task and self.link_end_pos:
-            task_rect = next((rect for t, rect in self.task_rects if t == self.link_start_task), None)
-            if task_rect:
-                # We need to adjust the start point by the scroll offset
-                scroll_area = self.parentWidget().parent()
-                h_scroll_offset = scroll_area.horizontalScrollBar().value()
-                v_scroll_offset = scroll_area.verticalScrollBar().value()
-
-                start_point = QPointF(task_rect.right() - h_scroll_offset, task_rect.center().y() - v_scroll_offset)
-
-                painter.setPen(QPen(QColor(255, 165, 0), 2, Qt.PenStyle.DashLine)) # Orange color for linking line
-                painter.drawLine(start_point, self.link_end_pos)
+        # Pass the paint event's rectangle to the render method for optimized drawing
+        self.render(painter, clip_rect=event.rect())

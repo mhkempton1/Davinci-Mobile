@@ -81,8 +81,11 @@ def ingest_project_data(root_path_str):
     root_path = Path(root_path_str)
     print(f"Scanning directory: {root_path}")
 
-    task_files = list(root_path.glob('**/Task Sheets/**/*.md'))
-    print(f"Found {len(task_files)} task files to process.")
+    # Use rglob to find all .md files, then filter out templates
+    all_md_files = list(root_path.rglob('*.md'))
+    task_files = [file for file in all_md_files if 'Templates' not in file.parts]
+
+    print(f"Found {len(task_files)} task files to process (after filtering).")
 
     all_tasks = []
     ingestion_errors = []

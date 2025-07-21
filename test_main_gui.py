@@ -26,11 +26,18 @@ class TestVibeGanttApp(unittest.TestCase):
         # This test is no longer relevant as we are mocking the init
         pass
 
+    @patch('main_gui.Tk')
     @patch('main_gui.filedialog.askdirectory', return_value='fake_path')
     @patch('main_gui.ingest_project_data')
-    def test_load_project(self, mock_ingest, mock_askdirectory):
+    def test_load_project(self, mock_ingest, mock_askdirectory, mock_tk):
         task1 = VibeTask(None, {"task_name": "Task 1", "project_name": "Project A", "date_start": "2024-01-01", "date_end": "2024-01-05"}, "")
         mock_ingest.return_value = ([task1], [])
+        self.main_window.date_range_filter.currentText.return_value = "All Time"
+        self.main_window.project_filter.selectedItems.return_value = []
+        self.main_window.phase_filter.selectedItems.return_value = []
+        self.main_window.cost_code_filter.selectedItems.return_value = []
+        self.main_window.assigned_to_filter.selectedItems.return_value = []
+
 
         self.main_window.load_project()
 
@@ -38,12 +45,16 @@ class TestVibeGanttApp(unittest.TestCase):
         self.assertEqual(self.main_window.tasks[0].metadata['task_name'], "Task 1")
         self.assertEqual(len(self.main_window.errors), 0)
 
+    @patch('main_gui.open')
+    @patch('main_gui.QMessageBox')
     @patch('main_gui.frontmatter.dump')
     @patch('main_gui.os.replace')
-    def test_save_all_changes(self, mock_replace, mock_dump):
-        task1 = VibeTask(Mock(), {"task_name": "Task 1", "project_name": "Project A", "date_start": "2024-01-01", "date_end": "2024-01-05"}, "")
+    def test_save_all_changes(self, mock_replace, mock_dump, mock_message_box, mock_open):
+        from pathlib import Path
+        task1 = VibeTask(Path("fake_path/task1.md"), {"task_name": "Task 1", "project_name": "Project A", "date_start": "2024-01-01", "date_end": "2024-01-05"}, "")
         task1.is_dirty = True
         self.main_window.tasks = [task1]
+        self.main_window.details_panel.current_task = task1
 
         self.main_window.save_all_changes()
 
