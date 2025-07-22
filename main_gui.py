@@ -196,8 +196,7 @@ class VibeGanttApp(QMainWindow):
         self.load_project() # Automatically load project on startup
 
     def closeEvent(self, event):
-        QApplication.instance().quit()
-        event.accept()
+        super().closeEvent(event)
 
     def _setup_ui(self):
         splitter = QSplitter(Qt.Orientation.Horizontal)
