@@ -4,7 +4,7 @@ from tkinter import filedialog, Tk
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QLabel, QMenuBar,
                              QStatusBar, QWidget, QVBoxLayout, QListWidget,
                              QSplitter, QPushButton, QAbstractItemView, QFormLayout,
-                             QLineEdit, QTextEdit, QComboBox, QMessageBox, QWidget, QSizePolicy)
+                             QLineEdit, QTextEdit, QComboBox, QMessageBox, QWidget, QSizePolicy, QScrollArea)
 from PyQt6.QtGui import QAction, QPainter, QColor, QPen, QTextOption, QFont
 from PyQt6.QtCore import Qt, QRectF, QDate, pyqtSignal, QPointF
 from PyQt6.QtPrintSupport import QPrinter, QPrintDialog
@@ -208,6 +208,7 @@ class VibeGanttApp(QMainWindow):
         self.filter_layout.addWidget(QLabel("Date Range:"))
         self.date_range_filter = QComboBox()
         self.date_range_filter.addItems(["Next 30 Days", "Next 60 Days", "Next 90 Days", "This Year", "All Time"])
+        self.date_range_filter.setCurrentText("All Time")
         self.date_range_filter.currentIndexChanged.connect(self.apply_filters)
         self.filter_layout.addWidget(self.date_range_filter)
         self.project_filter = self._create_filter_widget("Project Name")
@@ -223,7 +224,10 @@ class VibeGanttApp(QMainWindow):
         splitter.addWidget(self.filter_panel)
         
         self.gantt_chart = GanttChartWidget()
-        splitter.addWidget(self.gantt_chart)
+        self.gantt_scroll_area = QScrollArea()
+        self.gantt_scroll_area.setWidgetResizable(True)
+        self.gantt_scroll_area.setWidget(self.gantt_chart)
+        splitter.addWidget(self.gantt_scroll_area)
         
         self.details_panel = DetailsPanel()
         splitter.addWidget(self.details_panel)

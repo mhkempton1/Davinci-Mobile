@@ -111,16 +111,9 @@ class GanttChartWidget(QWidget):
         if modifiers == Qt.KeyboardModifier.ControlModifier:
             self.zoom(delta > 0, event.position().x())
             event.accept()
-        elif modifiers == Qt.KeyboardModifier.ShiftModifier:
-            # Pan horizontally with Shift+Scroll
-            self.pan_offset.setX(self.pan_offset.x() - delta)
-            self.update()
-            event.accept()
         else:
-            # Pan vertically with normal scroll
-            self.pan_offset.setY(self.pan_offset.y() - delta)
-            self.update()
-            event.accept()
+            # Pass scroll events to parent (QScrollArea) to handle.
+            super().wheelEvent(event)
 
 
     def keyPressEvent(self, event):
@@ -292,6 +285,7 @@ class GanttChartWidget(QWidget):
                 painter.drawText(text_rect_header, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom, date_text)
 
         # --- Draw Tasks ---
+        self.task_rects.clear()
         task_y_start_offset = self.header_height
         for task_index, task in enumerate(self.tasks_to_display):
             task_start_date, task_end_date = task.metadata.get('date_start'), task.metadata.get('date_end')
@@ -305,10 +299,13 @@ class GanttChartWidget(QWidget):
             height = self.task_height
             y_on_canvas = task_y_start_offset + task_index * (self.task_height + self.task_spacing)
 
+            task_rect = QRectF(x_start_on_canvas, y_on_canvas, width_on_canvas, height)
+            self.task_rects.append((task, task_rect))
+
             task_color = generate_color_from_text(task.metadata.get('project_name', ''))
-            painter.fillRect(x_start_on_canvas, y_on_canvas, width_on_canvas, height, task_color)
+            painter.fillRect(task_rect, task_color)
             painter.setPen(QPen(QColor(0, 0, 0), 1))
-            painter.drawRect(x_start_on_canvas, y_on_canvas, width_on_canvas, height)
+            painter.drawRect(task_rect)
 
             task_name = task.metadata.get('task_name', 'Unnamed Task')
             project_id = task.metadata.get('project_name', '')
@@ -322,8 +319,8 @@ class GanttChartWidget(QWidget):
             if width_on_canvas < 50: font_size_bar_text = 7
             painter.setFont(QFont("Segoe UI", font_size_bar_text))
             text_padding = 2
-            bar_text_rect = QRectF(x_start_on_canvas + text_padding, y_on_canvas + text_padding,
-                                   width_on_canvas - 2 * text_padding, height - 2 * text_padding)
+            bar_text_rect = QRectF(task_rect.left() + text_padding, task_rect.top() + text_padding,
+                                   task_rect.width() - 2 * text_padding, task_rect.height() - 2 * text_padding)
             font_metrics = QFontMetrics(painter.font())
             elided_text = font_metrics.elidedText(task_info, Qt.TextElideMode.ElideRight, int(bar_text_rect.width()))
             painter.drawText(bar_text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, elided_text)
