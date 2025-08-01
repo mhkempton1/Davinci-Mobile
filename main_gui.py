@@ -344,7 +344,7 @@ class VibeGanttApp(QMainWindow):
                 check_match('cost_code', selected_cost_codes) and
                 check_match('assigned_to', selected_assignees)):
                 filtered_tasks.append(task)
-        self.gantt_chart.set_tasks(self.tasks, filtered_tasks, view_start, view_end)
+        self.gantt_chart.set_tasks(filtered_tasks, filtered_tasks, view_start, view_end)
         self.statusBar().showMessage(f"Rendering {len(filtered_tasks)} tasks.", 3000)
 
     def save_all_changes(self):
