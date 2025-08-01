@@ -49,7 +49,7 @@ class GanttChartWidget(QWidget):
         # Set a minimum size to ensure it's always viewable even with no tasks
         self.setMinimumSize(QSize(200 + self.name_column_width, self.header_height + 100)) # Min visible area
 
-    def set_tasks(self, all_tasks: list[VibeTask], filtered_tasks: list[VibeTask], start_date: date, end_date: date):
+    def set_tasks(self, tasks: list[VibeTask], all_tasks: list[VibeTask], start_date: date, end_date: date):
         self.tasks = all_tasks
         # Helper function to ensure string conversion for sorting keys
         def get_string_value(metadata_value, default=""):
@@ -58,7 +58,7 @@ class GanttChartWidget(QWidget):
             return str(metadata_value) if metadata_value is not None else default
 
         # Sort tasks by project name then task name for consistent grouping
-        self.tasks_to_display = sorted(filtered_tasks, key=lambda t: (
+        self.tasks_to_display = sorted(tasks, key=lambda t: (
             get_string_value(t.metadata.get('project_name')),
             get_string_value(t.metadata.get('task_name', 'Unnamed Task'))
         ))
